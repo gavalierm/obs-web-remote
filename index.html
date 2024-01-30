@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="sk">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no, shrink-to-fit=no" />
+        <meta name="HandheldFriendly" content="true">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="mobile-web-app-capable" content="yes">
+        <link rel="apple-touch-icon" sizes="57x57" href="img/fav/apple-icon-57x57.png">
+        <link rel="apple-touch-icon" sizes="60x60" href="img/fav/apple-icon-60x60.png">
+        <link rel="apple-touch-icon" sizes="72x72" href="img/fav/apple-icon-72x72.png">
+        <link rel="apple-touch-icon" sizes="76x76" href="img/fav/apple-icon-76x76.png">
+        <link rel="apple-touch-icon" sizes="114x114" href="img/fav/apple-icon-114x114.png">
+        <link rel="apple-touch-icon" sizes="120x120" href="img/fav/apple-icon-120x120.png">
+        <link rel="apple-touch-icon" sizes="144x144" href="img/fav/apple-icon-144x144.png">
+        <link rel="apple-touch-icon" sizes="152x152" href="img/fav/apple-icon-152x152.png">
+        <link rel="apple-touch-icon" sizes="180x180" href="img/fav/apple-icon-180x180.png">
+        <link rel="icon" type="image/png" sizes="192x192" href="img/fav/android-icon-192x192.png">
+        <link rel="icon" type="image/png" sizes="32x32" href="img/fav/favicon-32x32.png">
+        <link rel="icon" type="image/png" sizes="96x96" href="img/fav/favicon-96x96.png">
+        <link rel="icon" type="image/png" sizes="16x16" href="img/fav/favicon-16x16.png">
+        <link rel="manifest" href="manifest.json">
+        <meta name="theme-color" content="#000">
+        <script src="NoSleep.js"></script>
+        <title>OBS Remote</title>
+        <script>
+            async function storeCookie( clear, name , data  ){
+  //log( global_settings );
+  //log( 'refreshing');
+  var now = new Date();
+  var time = now.getTime();
+  time += 3600 * 1000 * 24 * 7;
+  now.setTime(time);
+
+  if( clear ){
+      document.cookie = name+"=; expires=Wed, 31 Oct 2012 08:50:17 GMT;";
+  }else{
+    document.cookie = name+"="+JSON.stringify(data)+"; expires=" + now.toUTCString() + ';';
+  }
+  
+
+  console.log( document.cookie );
+}
+
+
+    window.addEventListener("load", init, false);
+
+	var serverip = "192.168.66.117:4444"; //Change the server IP/port here
+
+	serverip = "192.168.0.104:4444";
+
+	var intervalID = 0;
+	var sceneRefreshInterval = 0;
+	var socketisOpen = false;
+	var studioMode = false;
+
+	var currentState = {
+		"watchedSource": "",  // the source we are watching if any
+		"watchedScene_s": [],   // the selected scene(s) we are monitoring
+		"previewScene": "",   // the name of the current preview scene
+		"programScenes": [],  // the name of the current live scenes. (can be 2 during transitions.)
+		"streaming": false,   // are we currently streaming?
+		"sceneList": [],		  // a place to store the obs scene list
+		"watchingStreamStatus": false,	//if the stream status is watched
+		"buttonMap": [],
+		"transitionsMap": [],
+		"durationsMap": [],
+		"transitionsList": [],
+		"currentTransition": ""
+	}
+
+	function init() {
+		//document.getElementById('serverIP').value = serverip;
+		//connectWebsocket();
+	}
+
+	function connectToServer() {
+		//enterFullscreen();
+		connectWebsocket();
+	}
+
+	function connectWebsocket() {
+		websocket = new WebSocket("ws://" + serverip);
+
+		websocket.onopen = function(evt) {
+			socketisOpen = 1;
+			clearInterval(intervalID);
+			intervalID = 0;
+			requestInitialState();
+		};
+
+		websocket.onclose = function(evt) {
+			socketisOpen = 0;
+			if (!intervalID) {
+				intervalID = setInterval(connectWebsocket, 5000);
+			}
+		};
+
+		websocket.onmessage = function(evt) {
+			var data = JSON.parse(evt.data);
+			//console.log('onmessage', data);
+			
+			if (data.hasOwnProperty("message-id")) {
+				handleInitialStateEvent(data)
+			} else if (data.hasOwnProperty("update-type")) {
+				handleStateChangeEvent(data)
+			} else {
+				console.log('onmessage unable to handle message.', data);
+			}
+		};
+
+		websocket.onerror = function(evt) {
+			socketisOpen = 0;
+			if (!intervalID) {
+				intervalID = setInterval(connectWebsocket, 5000);
+			}
+		};
+	}
+
+function enterFullscreen() {
+
+    var elem = document.documentElement;
+
+    /* View in fullscreen */
+    if (currentState.fullScreen) {
+    	currentState.fullScreen = false;
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) { /* Safari */
+            document.webkitExitFullscreen();
+        } else if (document.msExitFullscreen) { /* IE11 */
+            document.msExitFullscreen();
+        }
+    } else {
+    	currentState.fullScreen = true;
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen();
+        } else if (elem.webkitRequestFullscreen) { /* Safari */
+            elem.webkitRequestFullscreen();
+        } else if (elem.msRequestFullscreen) { /* IE11 */
+            elem.msRequestFullscreen();
+        }
+    }
+}
+
+	// send messages to OBS requesting the initial state we need in order to function.
+	function requestInitialState() {
+		// message-id: we make this up. used to identify response messages which are sent back from OBS.
+		// request-type: command to send to OBS
+		var obj = document.getElementById("body");
+
+		var classString = obj.className; // returns the string of all the classes for myDiv
+	  var newClass = classString.concat(" connected"); // Adds the class "main__section" to the string (notice the leading space)
+	  obj.className = newClass; // sets className to the new string
+
+		const commands = [
+			{
+				"message-id": "get-scene-list",
+				// https://github.com/Palakis/obs-websocket/blob/4.x-current/docs/generated/protocol.md#getscenelist
+				"request-type": "GetSceneList"
+			},
+			{
+				"message-id": "get-studio-mode-status",
+				// https://github.com/Palakis/obs-websocket/blob/4.x-current/docs/generated/protocol.md#getstudiomodestatus
+				"request-type": "GetStudioModeStatus"
+			},
+			{
+				"message-id": "get-preview-scene",
+				// https://github.com/Palakis/obs-websocket/blob/4.x-current/docs/generated/protocol.md#getpreviewscene
+				"request-type": "GetPreviewScene"
+			},
+			{
+				"message-id": "get-streaming-status",
+				"request-type": "GetStreamingStatus"
+			},
+			{
+				"message-id": "get-transition-list",
+				"request-type": "GetTransitionList"
+			}
+		]
+
+		for (let i = 0; i < commands.length; i++) {
+			let payload = commands[i];
+
+			// console.log('sending command', payload);
+			if (socketisOpen) {
+				websocket.send(JSON.stringify(payload));
+			} else {
+				console.error('unable to send command. socket not open.', payload);
+			}
+		}
+	}
+	
+
+	// process responses to requests sent by requestInitialState
+	async function handleInitialStateEvent(data) {
+		const messageId = data["message-id"];
+
+		switch(messageId) {
+			case "get-scene-list":
+
+
+				//console.log( data.scenes );
+
+				currentState.sceneList = data.scenes;
+				generatepage_controles(data["scenes"],currentState.transitionsList);
+				currentState.programScenes = [data['current-scene']];
+				break;
+			case "get-transition-list":
+
+
+				//console.log( data.transitions );
+
+				currentState.transitionsList = data.transitions;
+
+				generatepage_controles(currentState.sceneList,data["transitions"]);
+				currentState.currentTransition = [data['current-transition']];
+				break;
+			case "get-studio-mode-status":
+				studioMode = data["studio-mode"];
+				break;
+			case "get-preview-scene":
+				currentState.previewScene = data['name'];
+				break;
+			case "get-streaming-status":
+				currentState.streaming = data['streaming'];
+				break;
+			case "get-scene-list-update":
+				currentState.sceneList = data.scenes;
+				break;
+			case "switch-scene":
+				//
+				currentState.switchAsk = false;
+				break;
+			case "set-preview-scene":
+				//
+				break;
+			case "preview-freeze":
+				//
+				break;
+			case "switch-ask":
+				currentState.switchAsk = true;
+				break;
+			default:
+				console.log('handleInitialStateEvent got unknown event.', data);
+		}
+		updateDisplay();
+	}
+
+	// set currentState values based on incoming websocket messages
+	async function handleStateChangeEvent(data) {
+		// console.log("before update", currentState);
+		// console.log(data);
+
+		const updateType = data["update-type"];
+
+		let displayNeedsUpdate = true;
+
+		switch(updateType) {
+			case "PreviewSceneChanged":
+				currentState.previewScene = data["scene-name"];
+
+				break;
+			case "SwitchScenes":
+				currentState.programScenes = [data["scene-name"]];
+				currentState.previewTap = false;
+				break;
+			case "StreamStarted":
+				currentState.streaming = true;
+				break;
+			case "StreamStopping":
+				currentState.streaming = false;
+				break;
+			case "TransitionBegin":
+				currentState.programScenes = [data["to-scene"], data["from-scene"]];
+				holdButtons(true);
+				break;
+			case "TransitionEnd":
+				holdButtons(false);
+				break;
+			case "BroadcastCustomMessage":
+				if( data.realm == "preview-freeze" ){
+					//console.log( "freeze" );
+					//currentState.previewTap = false;
+				}
+				if( data.realm == "switch-ask" ){
+					//
+				}
+				if( data.realm == "update-screenshot" ){
+					//
+				}
+				break;
+			default:
+				displayNeedsUpdate = false;
+		}
+
+		// only do a display update if we received an event we care about.
+		// OBS may send other events as well, which we will disregard.
+		if (displayNeedsUpdate) {
+			updateDisplay();
+			// console.log("after update", currentState);
+		}
+	}
+
+	async function holdButtons( action ){
+		if( action ){
+			document.getElementById("cut_1").classList.add("hold");
+			document.getElementById("cut_2").classList.add("hold");
+			document.getElementById("cut_3").classList.add("hold");
+			return false;
+		}
+		document.getElementById("cut_1").classList.remove("hold");
+		document.getElementById("cut_2").classList.remove("hold");
+		document.getElementById("cut_3").classList.remove("hold");
+	}
+	// update various HTML elements based on current internal state variables.
+	async function updateDisplay() {
+
+		//console.log( currentState.programScenes );
+
+		currentState.buttonMap.forEach((button, index) => {
+
+			//console.log( button );
+
+			document.getElementById("button_"+ (index + 1)).classList.remove("program");
+			document.getElementById("button_"+ (index + 1)).classList.remove("preview");
+			document.getElementById("button_"+ (index + 1)).classList.remove("tap");
+			document.getElementById("button_"+ (index + 1)).classList.remove("ask");
+
+			//console.log( button ); console.log( currentState.programScenes[0] );
+
+			if ( currentState.programScenes[0] == button || currentState.programScenes[1] == button) {
+				if( currentState.switchAsk == true ){
+					document.getElementById("button_"+ (index + 1)).classList.remove("program");
+					document.getElementById("button_"+ (index + 1)).classList.remove("ask");
+					document.getElementById("button_"+ (index + 1)).classList.add("ask");
+				}else{
+					document.getElementById("button_"+ (index + 1)).classList.remove("program");
+					document.getElementById("button_"+ (index + 1)).classList.add("program");
+				}
+			} else if (studioMode && (currentState.previewScene == button )) {
+				if( currentState.previewTap == true ){
+					document.getElementById("button_"+ (index + 1)).classList.remove("tap");
+					document.getElementById("button_"+ (index + 1)).classList.add("tap");
+				}
+				document.getElementById("button_"+ (index + 1)).classList.remove("preview");
+				document.getElementById("button_"+ (index + 1)).classList.add("preview");
+
+			}
+			
+			
+		});
+		//return false;
+
+	}
+
+	// build buttons which allow user to select which scene to watch
+	async function generatepage_controles(list,transitions) {
+
+		count = 6;
+
+		var buttons = '';
+		var selection = '';
+		var transitions_selection = "";
+		var durations_selection = "";
+
+		list.forEach((scene) => {
+			selection += `<option value="${scene.name}">${scene.name}</option>`;
+		});
+
+		for(var x = 1200; x<4500; x=x+1000) {
+			durations_selection += `<option value="${x}">${x}</option>`;
+		}
+
+		buttons += '<div id="switch_ask" class="button_cont"><div class="selection_cont"><select style="visibility:hidden" name="durations_"><option value="0">0</option></select></div><div id="ask_1" class="button" onclick="switchAsk(this);">Ask</div></div>';
+
+		buttons += '<div id="" class="button_cont"><div class="selection_cont"><select style="visibility:hidden" name="durations_"><option value="0">0</option></select></div><div id="" class="button" onclick=""></div></div>';
+
+		buttons += '<div id="" class="button_cont"><div class="selection_cont"><select style="visibility:hidden" name="durations_"><option value="0">0</option></select></div><div id="" class="button" onclick=""></div></div>';
+
+
+		for(var i = 1; i < (count + 1); i++)
+		{
+
+			buttons += '<div id="button_'+i+'" class="button_cont"><div class="selection_cont"><select name="selection" onChange="storeMap();">'+selection+'</select></div><div class="button" onclick="prepareScene('+i+');"><span id="button_'+i+'_cap">'+i+'</span></div></div>';
+		}
+		
+		document.getElementById("control_buttons").innerHTML = buttons;
+		buttons = "";
+
+
+
+		buttons += '<div id="cut_button_1" class="button_cont"><div class="selection_cont"><select style="visibility:hidden" name="durations_"><option value="0">0</option></select></div><div id="cut_1" class="button" onclick="cutScene(1,0,this);">Cut</div></div>';
+
+		buttons += '<div id="cut_button_2" class="button_cont half"><div class="selection_cont"><select name="durations" onChange="storeMap();">'+durations_selection+'</select></div><div id="cut_2" class="button" onclick="cutScene(2,1,this);">Fade</div></div>';
+
+		buttons += '<div id="cut_button_3" class="button_cont half"><div class="selection_cont"><select name="durations" onChange="storeMap();">'+durations_selection+'</select></div><div id="cut_3" class="button" onclick="cutScene(2,2,this);">Fade</div></div>';
+
+		
+
+
+		
+		//document.getElementById("buttons_row_2").innerHTML = buttons;
+
+
+		document.getElementById("cut_buttons").innerHTML = buttons;
+
+
+
+		//distribucia pre kayde tlacidlo ina scena ako yaklad + hack posun o 4 sceny hore
+
+		var selection = document.getElementsByName("selection");
+		//console.log( selection.length );
+
+		var i;
+		var hack = 1;
+		for (i = 0; i < selection.length; i++) {
+			if( selection[i][hack+i] ){
+				selection[i].value = selection[i][hack+i].value;
+			}
+		}
+
+		var durations = document.getElementsByName("durations");
+		//console.log( selection.length );
+		var i;
+		var hack = 0;
+		for (i = 0; i < durations.length; i++) {
+			if( durations[i][hack+i] ){
+				durations[i].value = durations[i][hack+i].value;
+			}
+		}
+
+
+		storeMap();
+	}
+
+	async function prepareScene( index, name  ){
+
+		if( index ){
+			index = parseInt(index,10) - 1;
+
+			var scene = currentState.buttonMap[ index ];	
+		}
+		if( name ){
+
+			var scene = name;
+		}
+		
+
+		//console.log( scene );
+
+		if ( currentState.programScenes[0] == scene || currentState.programScenes[1] == scene) {
+			//in program
+			return false;
+		}
+
+		if (studioMode && (currentState.previewScene == scene )) {
+			if( currentState.previewTap == true ){
+				cutScene(1,1);
+			}else{
+				currentState.previewTap = true;
+				websocket.send(JSON.stringify({"message-id": "preview-freeze","realm": "preview-freeze", "request-type": "BroadcastCustomMessage","data": {}}));
+				document.getElementById("button_"+ (index + 1)).classList.add("tap");
+			}
+			return false;
+		}
+
+
+		currentState.previewTap = false;
+
+		var payload = { "message-id": "set-preview-scene", "request-type": "SetPreviewScene" ,"scene-name": scene};
+		//console.log('sending command', payload);
+
+		if (socketisOpen) {
+			websocket.send(JSON.stringify(payload));
+		} else {
+			console.error('unable to send command. socket not open.', payload);
+		}
+
+		return false;
+	}
+
+
+	async function cutScene( index, duration_id = null, obj = null){
+		if( obj ){
+			//obj.classList.add("bite");
+			//var timeout = window.setTimeout(function(){obj.classList.remove("bite");}, 70);
+		}
+
+		if( currentState.previewTap == false ){
+			prepareScene( null, currentState.previewScene );
+			return false;
+		}
+		
+
+		var transition = parseInt(index,10) - 1;
+
+		if( duration_id ){
+			var duration = parseInt(duration_id,10) - 1;
+			currentState.transitionsList[transition].duration = currentState.durationsMap[duration];	
+		}
+		
+
+		
+		//console.log( transition );
+		//console.log( currentState.transitionsList );
+
+		
+
+		var payload = { "message-id": "switch-scene", "request-type": "TransitionToProgram","with-transition": currentState.transitionsList[transition] };
+		//console.log('sending command', payload);
+
+		if (socketisOpen) {
+			websocket.send(JSON.stringify(payload));
+			//obj.classList.remove("bite");
+		} else {
+			console.error('unable to send command. socket not open.', payload);
+		}
+
+		currentState.previewTap == false;
+		return false;
+	}
+
+
+
+
+async function switchAsk( elem ){
+	console.log( "ask" );
+	websocket.send(JSON.stringify({"message-id": "switch-ask","realm": "switch-ask", "request-type": "BroadcastCustomMessage","data": {}}));
+}
+
+	async function storeMap( prepare = null ){
+		//console.log("store map");
+		var selection = document.getElementsByName("selection");
+		//console.log( selection.length );
+
+		var i;
+		for (i = 0; i < selection.length; i++) {
+		    currentState.buttonMap[i] = selection[i].value;
+
+		    var startingNumber = ( currentState.buttonMap[i].match(/\d+\.\d+|\d+\b|\d+(?=\w)/g) || [] ).map(function (v) {return +v;}).shift(); //=> 4567
+
+			if(startingNumber){
+				startingNumber = startingNumber;
+			}else{
+				startingNumber = currentState.buttonMap[i].substring(0,3);
+			}
+			document.getElementById("button_"+ (i + 1)+"_cap").innerHTML = startingNumber;
+		}
+
+		var selection = document.getElementsByName("durations");
+		//console.log( selection.length );
+
+		//var i;
+		for (i = 0; i < selection.length; i++) {
+			//console.log( selection[i].value );
+		    currentState.durationsMap[i] = parseInt(selection[i].value,10);
+		    //var transition = currentState.durationsMap[i];
+		}
+
+		//console.log( currentState.durationsMap );console.log( currentState.transitionsList );
+
+		//storeCookie(0,'obs_cc', currentState );
+
+		updateDisplay();
+		return false;
+	}
+
+
+	async function registerSW() {
+// make the whole serviceworker process into a promise so later on we can
+// listen to it and in case new content is available a toast will be shown
+window.isUpdateAvailable = new Promise(function(resolve, reject) {
+  // lazy way of disabling service workers while developing
+  //&& ['localhost', '127'].indexOf(location.hostname) === -1
+  if ('serviceWorker' in navigator ) {
+    // register service worker file
+    navigator.serviceWorker.register('sworker.js')
+      .then(reg => {
+        reg.onupdatefound = () => {
+          const installingWorker = reg.installing;
+          installingWorker.onstatechange = () => {
+            switch (installingWorker.state) {
+              case 'installed':
+                if (navigator.serviceWorker.controller) {
+                  // new update available
+                  resolve(true);
+                } else {
+                  // no update available
+                  resolve(false);
+                }
+                break;
+            }
+          };
+        };
+      })
+      .catch(err => console.error('[SW ERROR]', err));
+  }
+});
+
+              window['isUpdateAvailable']
+              .then(isAvailable => {
+                if (isAvailable) {
+                  
+                    log( 'New Update available! Reload the webapp to see the latest juicy changes.');
+                    
+                }
+              });
+
+}
+</script>
+        <style>
+            * {
+    box-sizing: border-box;
+    /* CSS 3 rec */
+    -moz-box-sizing: border-box;
+    /* Firefox 2 */
+    -ms-box-sizing: border-box;
+    /* Internet Explorer 8 */
+    -webkit-box-sizing: border-box;
+    /* Safari 3 */
+    -khtml-box-sizing: border-box;
+    /* Konqueror */
+    outline: 0;
+    -webkit-user-select: none;
+    /* Safari */
+    -ms-user-select: none;
+    /* IE 10+ and Edge */
+    user-select: none;
+    /* normal syntax */
+  -webkit-touch-callout: none; /* iOS Safari */
+    -webkit-user-select: none; /* Safari */
+     -khtml-user-select: none; /* Konqueror HTML */
+       -moz-user-select: none; /* Old versions of Firefox */
+        -ms-user-select: none; /* Internet Explorer/Edge */
+            user-select: none; /* Non-prefixed version, currently
+                                  supported by Chrome, Edge, Opera and Firefox */
+                                  touch-action: manipulation;
+}
+
+input {
+    margin: 0;
+    -webkit-user-select: initial;
+    /* Safari */
+    -ms-user-select: initial;
+    /* IE 10+ and Edge */
+    user-select: initial;
+    /* normal syntax */
+    font-size: 100%;
+}
+
+select {
+    background: inherit;
+    color: white;
+    padding: 0.2em;
+    border: none;
+    width: 100%;
+	font-size: 0.85em;
+}
+button{
+	box-shadow:inset 0px 1px 0px 0px #ffffff;
+	background:linear-gradient(to bottom, #ededed 5%, #dfdfdf 100%);
+	background-color:#ededed;
+	border-radius:6px;
+	border:1px solid #dcdcdc;
+	display:inline-block;
+	cursor:pointer;
+	color:#777777;
+	font-size:15px;
+	font-weight:bold;
+	padding:6px 24px;
+	text-decoration:none;
+	text-shadow:0px 1px 0px #ffffff;
+	-webkit-appearance: none;
+    -moz-appearance: none;
+}
+html{
+	margin: 0px;
+	padding: 0px;
+	width: 100vw;
+	height: 100vh;
+}
+
+body {
+
+	display: flex;
+    justify-content: center;
+    align-items: center;
+
+	position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+
+
+
+	text-align: center;
+    background-color: #1b1b1b;
+    color: white;
+
+    font-weight: 300;
+    margin: 0px;
+    padding: 0px;
+    font-family: sans-serif;
+    font-size: 12px;
+
+    overflow: hidden;
+}
+
+
+#page_settings,#page_control{
+	flex: 1 0 700px;
+	width: 700px;
+    height: 400px;
+}
+
+#page_control{
+	display: none;
+}
+.page_content{
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+}
+
+body.connected #page_settings{
+	display: none;
+}
+
+body.connected #page_control{
+	display: block;
+}
+
+
+#control_surface{
+display: flex;
+    align-items: flex-end;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    align-content: space-between;
+    align-items: flex-end;
+    padding: 20px;
+    
+}
+
+#control_buttons, #cut_buttons{
+	display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-content: center;
+}
+
+#control_buttons{
+	justify-content: flex-start;
+    flex: 1 0 75%;
+}
+
+#cut_buttons{
+	flex: 1 0 25%;
+    flex-flow: wrap-reverse;
+}
+.button_cont{
+	width: 155px;
+	padding: 1em 1em 0.5em 1em;
+}
+
+.button {
+	color: white;
+	margin-top: 0.2em;
+	font-weight: bold;
+	padding: 0.7em 0px;
+    border: 1px solid #696969;
+    font-size: 2.2em;
+    border-radius: 0.5em;
+    overflow: hidden;
+    background-color: #565656;
+}
+
+.button.hold
+        {
+        cursor: not-allowed;
+        pointer-events: none;
+
+        /*Button disabled - CSS color class*/
+        background: #313131;
+    color: #9E9E9E;
+
+        }
+
+.button_cont.preview .button{
+    background-color: #8bc34a;
+}
+.button_cont.program .button{
+    background-color: #f44336;
+}
+.button_cont.preview.tap .button {
+    background: #ff9800;
+}
+.button_cont.ask .button{
+	background: #03a9f4;
+}
+
+.button.bite{
+	background-color: white;
+}
+.button span{
+	font-size: 1.5em;
+}
+.half .button{
+	padding: 0.5em;
+}
+
+
+@media screen and (max-width: 600px) {
+	#control_buttons{
+		flex: 1 1 auto;
+	}
+}
+
+ @media screen and (orientation: portrait) {
+      #page_control {
+        /* Rotate the content container */
+        transform: rotate(-90deg);
+        transform-origin: center;
+      }
+    }
+
+</style>
+    </head>
+
+    <body id="body">
+        <div id="page_settings">
+            <div class="page_content">
+                <button type="button" onclick="connectToServer();" style="align-self: center;">Connect</button>
+            </div>
+        </div>
+        <div id="page_control">
+            <div class="page_content">
+                <div id="control_surface">
+                    <div id="control_buttons"></div>
+                    <div id="cut_buttons"></div>
+                </div>
+            </div>
+        </div>
+    </body>
